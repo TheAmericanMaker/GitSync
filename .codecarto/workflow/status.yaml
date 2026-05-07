@@ -8,7 +8,7 @@ pipeline: workflow/pipeline-full-with-deep-audit.yaml
 #   pipeline-defect-scan.yaml                    → remove contracts through reimplementation-spec; collapse defect phases into a single defect-scan
 #   pipeline-lite.yaml                           → remove all defect-scan phases, porting, and reimplementation-spec
 #   pipeline-architecture-only.yaml              → keep only architecture
-current_phase: architecture  # Set to "complete" when all phases are done.
+current_phase: defect-scan-mechanical  # Set to "complete" when all phases are done.
 last_updated: "2026-05-06"
 # Schema for open_questions and carry_forward entries (see GUIDE.md "Open Questions vs Carry-Forward"):
 #   open_questions: items that are still genuinely unknown (need a runtime test, maintainer decision, spec ruling).
@@ -19,11 +19,73 @@ last_updated: "2026-05-06"
 #                defer-to-phase, needs-fixture-capture
 phases:
   architecture:
-    status: pending
-    owner_notes: []
-    outputs_present: []
-    open_questions: []   # genuinely unknown items
-    carry_forward: []    # items routed to a later phase {id, kind, target_phase, description, deferred_reason}
+    status: complete
+    owner_notes:
+      - "Stack: Rust core (libgit2 via git2-rs in a single 165KB git_manager.rs) + flutter_rust_bridge + Dart UI/services. lib/main.dart at 290KB plus lib/ui/page/onboarding_setup.dart (159KB), lib/ui/dialog/manual_sync.dart (84KB), lib/ui/page/ai_features_page.dart (80KB), lib/api/manager/auth/github_manager.dart (70KB) need section-by-section walks downstream."
+      - "Runtime fulcrum: lib/gitsync_service.dart:_sync orchestrates every sync trigger. iOS-vs-Android isolate-lifetime split (iOS inline await vs Android Timer in _finishWidget) is a load-bearing concurrency hazard."
+      - "iOS BGTaskScheduler hard-codes 101 identifiers (scheduled_sync_0..100) in Info.plist — direct cap on number of repo containers per device on iOS."
+      - "Three pubspec dependency_overrides on ViscousPot forks (flutter_background_service_with_intents, mmap2_flutter, ios_document_picker) are load-bearing — a port must replicate semantic diffs."
+      - "Inventoried 127 hand-written Dart files + 5 Rust files (frb_generated.rs and lib/src/rust/ excluded) in scratch/file-inventory.md."
+    outputs_present:
+      - findings/architecture/architecture-map.md
+      - scratch/file-inventory.md
+      - findings/build-and-deploy/build-and-deploy.md  # planned secondary output for downstream phases (currently empty)
+    open_questions:
+      - id: arch-OQ3
+        kind: needs-maintainer-decision
+        description: "Why is lib/main.dart 290KB single-file? Intentional bundling for tree-shaking, FRB single-registration-site requirement, or historical accumulation?"
+        deferred_reason: "A maintainer-decision-level question; not closable by any pipeline phase. Contracts phase still walks it page-by-page."
+    carry_forward:
+      - id: arch-CF1
+        kind: defer-to-phase
+        target_phase: contracts
+        description: "Catalog provider-API endpoints invoked by github_manager.dart (70KB), gitlab_manager.dart (47KB), gitea_manager.dart (49KB), codeberg_manager.dart thin wrapper; pin retry/rate-limit behavior."
+        deferred_reason: "Contracts phase walks features and naturally enumerates REST surfaces + retry semantics."
+      - id: arch-CF2
+        kind: defer-to-phase
+        target_phase: contracts
+        description: "AI feature contract (chat / wand / agent). Trigger -> side effects -> persisted state -> error behavior. 11 files in lib/api/ai_*.dart; ai_stream_client.dart for SSE caching question."
+        deferred_reason: "Contracts phase rubric covers user-visible features."
+      - id: arch-CF3
+        kind: defer-to-phase
+        target_phase: protocols
+        description: "flutter_rust_bridge wire surface: every Rust-side function exposed via FRB paired with its Dart caller. rust/src/api/git_manager.rs 165KB; lib/api/manager/git_manager.dart 53KB."
+        deferred_reason: "Protocols phase rubric is exactly this kind of wire-format extraction."
+      - id: arch-CF4
+        kind: defer-to-phase
+        target_phase: protocols
+        description: "flutter_background_service_with_intents (forked) intent broadcast protocol — what intents accepted, payloads, reply broadcasts. Constants in lib/gitsync_service.dart (ACCESSIBILITY_EVENT, FORCE_SYNC, MANUAL_SYNC, INTENT_SYNC, TILE_SYNC, UPDATE_SERVICE_STRINGS, MERGE, MERGE_COMPLETE, repoIndex)."
+        deferred_reason: "Protocols phase."
+      - id: arch-CF5
+        kind: defer-to-phase
+        target_phase: protocols
+        description: "home_widget IPC protocol — SharedPreferences keys (forceSyncWidget_status), qualifiedAndroidName resolution to a Receiver, iOS WidgetCenter.shared.reloadTimelines(ofKind:) matching ForceSyncWidget."
+        deferred_reason: "Protocols phase."
+      - id: arch-CF6
+        kind: defer-to-phase
+        target_phase: protocols
+        description: "iOS BGTaskScheduler 101-ID pool semantics — how slots are assigned to repos, what happens past container index 100, register/unregister lifecycle."
+        deferred_reason: "Protocols phase."
+      - id: arch-CF7
+        kind: defer-to-phase
+        target_phase: defect-scan-mechanical
+        description: "lib/global.dart:demo const flag (TODO comment: 'Must be false for release') — release-state hazard if it ever flips inadvertently."
+        deferred_reason: "Mechanical defect rubric covers config/environment hazards (pass 6)."
+      - id: arch-CF8
+        kind: defer-to-phase
+        target_phase: defect-scan-mechanical
+        description: "mmap2_flutter (forked) usage call-sites — concurrency hazards if libgit2 writes overlap with UI mmap reads."
+        deferred_reason: "Mechanical pass enumerates dangerous patterns; semantic pass will revisit if call-sites surface."
+      - id: arch-CF9
+        kind: defer-to-phase
+        target_phase: defect-scan-semantic
+        description: "iOS-vs-Android _finishWidget Timer-vs-inline split — verify _syncGeneration race correctness across both isolate-lifetime models."
+        deferred_reason: "Concurrency pass (semantic pass 3)."
+      - id: arch-CF10
+        kind: defer-to-phase
+        target_phase: defect-scan-semantic
+        description: "secrets.dart runtime use — verify no path leaks the OAuth client secret into logs, errors, or telemetry."
+        deferred_reason: "Security pass (semantic pass 4)."
   defect-scan-mechanical:
     status: pending
     owner_notes: []
@@ -61,4 +123,4 @@ phases:
     open_questions: []
     carry_forward: []
 next_actions:
-  - Begin architecture phase by reading the repository and producing findings/architecture/architecture-map.md
+  - "Begin defect-scan-mechanical: read findings/architecture/architecture-map.md and findings/defect-scan/passes/{01-logic-and-correctness,02-error-handling,06-config-and-environment}.md. Pick up arch-CF7 (lib/global.dart:demo) and arch-CF8 (mmap2 call sites) from architecture.carry_forward. Deep-read targets: rust/src/api/git_manager.rs (165KB), lib/api/manager/git_manager.dart (53KB), lib/api/helper.dart (29KB), lib/api/logger.dart (12KB), lib/api/ai_tools_git.dart (45KB), lib/constant/values.dart, lib/constant/secrets.dart.template, pubspec.yaml."
